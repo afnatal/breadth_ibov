@@ -32,6 +32,7 @@ import pandas as pd
 import requests
 import streamlit as st
 import yfinance as yf
+import altair as alt
 
 
 FALLBACK_TICKERS = [
@@ -391,6 +392,105 @@ def formatar_pct(valor):
     return f"{valor:.1f}%"
 
 
+
+def preparar_dataframe_plot(df, colunas):
+    """
+    Prepara DataFrame em formato longo para gráficos Altair.
+    Funciona mesmo quando o índice de datas vem com nomes diferentes.
+    """
+    dados = df[colunas].copy()
+    dados = dados.reset_index()
+
+    coluna_data = dados.columns[0]
+    dados = dados.rename(columns={coluna_data: "Data"})
+
+    dados_longos = dados.melt(
+        id_vars="Data",
+        var_name="Indicador",
+        value_name="Valor"
+    )
+
+    return dados_longos
+
+
+def grafico_medias_coloridas(df, colunas, titulo_eixo_y="Valor"):
+    """
+    Plota MM20 em verde, MM50 em amarelo e MM200 em vermelho.
+    Usado para breadth simples, breadth ponderado, quantidade e IBOV com médias.
+    """
+    dados_longos = preparar_dataframe_plot(df, colunas)
+
+    mapa_cores = {
+        "% acima MM20": "#00A000",
+        "% acima MM50": "#FFD700",
+        "% acima MM200": "#D62728",
+
+        "% ponderado acima MM20": "#00A000",
+        "% ponderado acima MM50": "#FFD700",
+        "% ponderado acima MM200": "#D62728",
+
+        "Qtd acima MM20": "#00A000",
+        "Qtd acima MM50": "#FFD700",
+        "Qtd acima MM200": "#D62728",
+
+        "MM20": "#00A000",
+        "MM50": "#FFD700",
+        "MM200": "#D62728",
+        "IBOV": "#1F77B4",
+    }
+
+    domain = [c for c in colunas]
+    range_cores = [mapa_cores.get(c, "#1F77B4") for c in colunas]
+
+    chart = (
+        alt.Chart(dados_longos)
+        .mark_line(strokeWidth=2)
+        .encode(
+            x=alt.X("Data:T", title="Data"),
+            y=alt.Y("Valor:Q", title=titulo_eixo_y),
+            color=alt.Color(
+                "Indicador:N",
+                scale=alt.Scale(domain=domain, range=range_cores),
+                legend=alt.Legend(title="Indicador")
+            ),
+            tooltip=[
+                alt.Tooltip("Data:T", title="Data"),
+                alt.Tooltip("Indicador:N", title="Indicador"),
+                alt.Tooltip("Valor:Q", title="Valor", format=".2f"),
+            ],
+        )
+        .properties(height=420)
+        .interactive()
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
+def grafico_linha_simples(df, colunas, titulo_eixo_y="Valor"):
+    """
+    Gráfico simples para indicadores que não usam MM20/MM50/MM200.
+    """
+    dados_longos = preparar_dataframe_plot(df, colunas)
+
+    chart = (
+        alt.Chart(dados_longos)
+        .mark_line(strokeWidth=2)
+        .encode(
+            x=alt.X("Data:T", title="Data"),
+            y=alt.Y("Valor:Q", title=titulo_eixo_y),
+            color=alt.Color("Indicador:N", legend=alt.Legend(title="Indicador")),
+            tooltip=[
+                alt.Tooltip("Data:T", title="Data"),
+                alt.Tooltip("Indicador:N", title="Indicador"),
+                alt.Tooltip("Valor:Q", title="Valor", format=".2f"),
+            ],
+        )
+        .properties(height=420)
+        .interactive()
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
 def main():
     st.set_page_config(
         page_title="Market Breadth ELITE - Ibovespa",
@@ -484,9 +584,10 @@ def main():
         st.divider()
 
         st.subheader("Breadth percentual simples")
-        st.line_chart(
-            breadth[["% acima MM20", "% acima MM50", "% acima MM200"]],
-            width="stretch"
+        grafico_medias_coloridas(
+            breadth,
+            ["% acima MM20", "% acima MM50", "% acima MM200"],
+            titulo_eixo_y="% de ativos acima da média"
         )
 
         colunas_ponderadas = [
@@ -500,28 +601,32 @@ def main():
 
         if colunas_ponderadas:
             st.subheader("Breadth ponderado pelo peso no IBOV")
-            st.line_chart(
-                breadth[colunas_ponderadas],
-                width="stretch"
+            grafico_medias_coloridas(
+                breadth,
+                colunas_ponderadas,
+                titulo_eixo_y="% ponderado acima da média"
             )
 
         st.subheader("Quantidade de ativos acima das médias")
-        st.line_chart(
-            breadth[["Qtd acima MM20", "Qtd acima MM50", "Qtd acima MM200"]],
-            width="stretch"
+        grafico_medias_coloridas(
+            breadth,
+            ["Qtd acima MM20", "Qtd acima MM50", "Qtd acima MM200"],
+            titulo_eixo_y="Quantidade de ativos"
         )
 
         st.subheader("Advance/Decline Line aproximada")
-        st.line_chart(
-            ad_line[["Advance/Decline Line"]],
-            width="stretch"
+        grafico_linha_simples(
+            ad_line,
+            ["Advance/Decline Line"],
+            titulo_eixo_y="Linha A/D acumulada"
         )
 
         if not ibov.empty:
             st.subheader("IBOV e médias móveis")
-            st.line_chart(
-                ibov[["IBOV", "MM20", "MM50", "MM200"]],
-                width="stretch"
+            grafico_medias_coloridas(
+                ibov,
+                ["IBOV", "MM20", "MM50", "MM200"],
+                titulo_eixo_y="Pontos do IBOV"
             )
 
         st.divider()
