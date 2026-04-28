@@ -547,6 +547,12 @@ def grafico_medias_coloridas(df, colunas, titulo_eixo_y="Valor"):
     domain = [c for c in colunas]
     range_cores = [mapa_cores.get(c, "#1F77B4") for c in colunas]
 
+    zoom_x = alt.selection_interval(
+        bind="scales",
+        encodings=["x"],
+        name="zoom_temporal_medias"
+    )
+
     chart = (
         alt.Chart(dados_longos)
         .mark_line(strokeWidth=2)
@@ -565,7 +571,7 @@ def grafico_medias_coloridas(df, colunas, titulo_eixo_y="Valor"):
             ],
         )
         .properties(height=420)
-        .interactive()
+        .add_params(zoom_x)
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -576,6 +582,12 @@ def grafico_linha_simples(df, colunas, titulo_eixo_y="Valor"):
     Gráfico simples para indicadores que não usam MM20/MM50/MM200.
     """
     dados_longos = preparar_dataframe_plot(df, colunas)
+
+    zoom_x = alt.selection_interval(
+        bind="scales",
+        encodings=["x"],
+        name="zoom_temporal_linha"
+    )
 
     chart = (
         alt.Chart(dados_longos)
@@ -591,7 +603,7 @@ def grafico_linha_simples(df, colunas, titulo_eixo_y="Valor"):
             ],
         )
         .properties(height=420)
-        .interactive()
+        .add_params(zoom_x)
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -737,6 +749,12 @@ def grafico_setorial_linhas(df_setorial, titulo_eixo_y="% acima da média"):
         value_name="Valor"
     ).dropna()
 
+    zoom_x = alt.selection_interval(
+        bind="scales",
+        encodings=["x"],
+        name="zoom_temporal_setorial"
+    )
+
     chart = (
         alt.Chart(dados_longos)
         .mark_line(strokeWidth=2)
@@ -751,7 +769,7 @@ def grafico_setorial_linhas(df_setorial, titulo_eixo_y="% acima da média"):
             ],
         )
         .properties(height=480)
-        .interactive()
+        .add_params(zoom_x)
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -928,6 +946,11 @@ def main():
             exibir_quadro_regras_regime()
 
         st.divider()
+
+        st.caption(
+            "Dica de navegação nos gráficos: use o scroll do mouse para aproximar/afastar no eixo temporal; "
+            "arraste para navegar pelo período; dê duplo clique para restaurar a visualização completa."
+        )
 
         st.subheader("Breadth percentual simples")
         grafico_medias_coloridas(
