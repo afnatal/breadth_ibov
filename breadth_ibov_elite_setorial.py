@@ -843,6 +843,52 @@ def exibir_quadro_regras_regime():
         """
     )
 
+
+def exibir_explicacao_advance_decline():
+    """
+    Exibe explicação operacional sobre o gráfico Advance/Decline Line.
+    """
+    st.markdown("### Como interpretar o gráfico Advance/Decline Line")
+
+    st.info(
+        """
+        **O Advance/Decline Line mede a participação interna do mercado.**
+
+        Para cada pregão, o app compara o fechamento atual de cada ativo com o fechamento do pregão anterior:
+
+        - **Advance:** ativo que fechou em alta no dia;
+        - **Decline:** ativo que fechou em queda no dia;
+        - **Net Advances:** quantidade de ativos em alta menos quantidade de ativos em queda;
+        - **Advance/Decline Line:** soma acumulada diária do Net Advances.
+
+        **Exemplo:**  
+        Se em determinado dia 55 ativos subiram e 28 caíram, o saldo do dia será:
+
+        `55 - 28 = +27`
+
+        Esse valor é somado ao acumulado anterior da linha.
+        """
+    )
+
+    st.markdown(
+        """
+        **Leitura prática:**
+
+        - Quando a linha sobe, significa que mais ativos estão participando da alta.
+        - Quando a linha cai, significa que a alta está perdendo participação ou que a pressão vendedora está se espalhando.
+        - Se o IBOV sobe, mas a Advance/Decline Line cai, pode haver **divergência baixista**, indicando alta concentrada em poucos ativos pesados.
+        - Se o IBOV cai, mas a Advance/Decline Line sobe, pode haver **divergência altista**, indicando melhora interna antes do índice reagir.
+        - Uma Advance/Decline Line ascendente junto com breadth acima da MM20 e MM50 reforça um ambiente de maior apetite ao risco.
+        """
+    )
+
+    st.warning(
+        """
+        **Atenção:** nesta versão, o cálculo é aproximado e usa os ativos disponíveis via Yahoo Finance dentro da carteira carregada.
+        Caso algum ticker não tenha dados válidos no dia, ele não contribui para o cálculo daquele pregão.
+        """
+    )
+
 def main():
     st.set_page_config(
         page_title="Market Breadth ELITE Setorial - Ibovespa",
@@ -1055,6 +1101,9 @@ def main():
             ["Advance/Decline Line"],
             titulo_eixo_y="Linha A/D acumulada"
         )
+
+        with st.expander("Entenda o cálculo e a interpretação da Advance/Decline Line", expanded=True):
+            exibir_explicacao_advance_decline()
 
         if not ibov.empty:
             st.subheader("IBOV e médias móveis")
