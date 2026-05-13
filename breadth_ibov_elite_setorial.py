@@ -524,14 +524,17 @@ def calcular_advance_decline(fechamentos):
     retornos = fechamentos.pct_change()
     advances = (retornos > 0).sum(axis=1)
     declines = (retornos < 0).sum(axis=1)
-    total = retornos.notna().sum(axis=1).replace(0, pd.NA)
+    total = retornos.notna().sum(axis=1)
 
     ad = pd.DataFrame(index=fechamentos.index)
     ad["Advances"] = advances
     ad["Declines"] = declines
     ad["Net Advances"] = advances - declines
     ad["Advance/Decline Line"] = ad["Net Advances"].cumsum()
-    ad["A/D Ratio (%)"] = (ad["Net Advances"] / total * 100).astype("float64")
+    # total.where(total > 0) substitui 0 por NaN e converte a Series para
+    # float64, evitando o problema de pd.NA + astype('float64') em pandas
+    # recentes.
+    ad["A/D Ratio (%)"] = ad["Net Advances"] / total.where(total > 0) * 100
 
     return ad
 
