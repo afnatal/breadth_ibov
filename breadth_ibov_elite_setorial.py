@@ -108,6 +108,7 @@ SETOR_POR_CODIGO = {
     "BBSE3": "Seguros",
     "PSSA3": "Seguros",
     "IRBR3": "Seguros",             # novo: resseguros
+    "CXSE3": "Seguros",             # novo: Caixa Seguridade
 
     # Petróleo, gás e combustíveis
     "PETR3": "Petróleo, Gás e Combustíveis",
@@ -136,17 +137,22 @@ SETOR_POR_CODIGO = {
     "ELET6": "Energia Elétrica",
     "EQTL3": "Energia Elétrica",
     "CMIG4": "Energia Elétrica",
+    "CPLE3": "Energia Elétrica",    # novo: Copel ON
     "CPLE6": "Energia Elétrica",
     "CPFE3": "Energia Elétrica",
     "EGIE3": "Energia Elétrica",
     "TAEE11": "Energia Elétrica",
     "ENEV3": "Energia Elétrica",
     "ENGI11": "Energia Elétrica",
+    "AURE3": "Energia Elétrica",    # novo: Auren Energia
+    "AXIA3": "Energia Elétrica",    # novo
+    "AXIA6": "Energia Elétrica",    # novo
+    "ISAE4": "Energia Elétrica",    # novo: ISA Energia
     "SBSP3": "Saneamento",
     "CSMG3": "Saneamento",
 
     # Consumo, varejo e alimentos
-    "ABEV3": "Consumo",
+    "ABEV3": "Varejo e Consumo",    # antes era singleton em "Consumo"
     "ASAI3": "Varejo e Consumo",
     "CRFB3": "Varejo e Consumo",
     "PCAR3": "Varejo e Consumo",
@@ -157,11 +163,14 @@ SETOR_POR_CODIGO = {
     "VIVA3": "Varejo e Consumo",
     "NTCO3": "Varejo e Consumo",
     "SMFT3": "Varejo e Consumo",    # novo: fitness/bem-estar
+    "CEAB3": "Varejo e Consumo",    # novo: C&A
+    "NATU3": "Varejo e Consumo",    # novo
     "BRFS3": "Alimentos",
     "JBSS3": "Alimentos",
     "MRFG3": "Alimentos",
     "BEEF3": "Alimentos",
     "SMTO3": "Alimentos",
+    "MBRF3": "Alimentos",           # novo: MBRF Global Foods
     "SLCE3": "Agro",
 
     # Saúde e educação
@@ -178,6 +187,7 @@ SETOR_POR_CODIGO = {
     "MRVE3": "Construção e Imóveis",
     "EZTC3": "Construção e Imóveis",
     "DIRR3": "Construção e Imóveis",
+    "CURY3": "Construção e Imóveis",    # novo: Cury Construtora
     "MULT3": "Shoppings e Propriedades",
     "ALOS3": "Shoppings e Propriedades",
     "IGTI11": "Shoppings e Propriedades",
@@ -186,12 +196,15 @@ SETOR_POR_CODIGO = {
     "RAIL3": "Transporte e Infraestrutura",
     "CCRO3": "Transporte e Infraestrutura",
     "AZUL4": "Transporte e Infraestrutura",
+    "MOTV3": "Transporte e Infraestrutura",    # novo: Motiva (ex-CCR)
     "RENT3": "Locação e Mobilidade",
     "VAMO3": "Locação e Mobilidade",
 
     # Tecnologia, telecom e indústria
     "WEGE3": "Indústria",
     "EMBR3": "Indústria",
+    "EMBJ3": "Indústria",           # novo
+    "POMO4": "Indústria",           # novo: Marcopolo
     "TOTS3": "Tecnologia",
     "TIMS3": "Telecom",
     "VIVT3": "Telecom",
