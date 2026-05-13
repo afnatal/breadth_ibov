@@ -8,21 +8,59 @@ Recursos:
 - Breadth por MM20, MM50 e MM200:
     - percentual simples;
     - percentual ponderado pelo peso da carteira, quando a B3 fornece participação;
-- Advance/Decline Line aproximada;
+- Advance/Decline Line e A/D Ratio (normalizada);
 - Divergência entre IBOV e breadth;
-- Regime de mercado:
+- Regime de mercado (opcional: usando breadth ponderado):
     - Risk-on;
     - Neutro;
     - Atenção;
     - Risk-off;
+    - Repique técnico;
+    - Consolidação intermediária;
 - Ranking por ativo;
+- Breadth setorial (atual + histórico);
 - Exportação CSV.
 
 Instalação:
 pip install -r requirements.txt
 
 Execução:
-streamlit run breadth_ibov_elite.py
+streamlit run breadth_ibov_elite_setorial.py
+
+================================================================================
+Histórico de correções desta versão (changelog do patch):
+
+BUGS CORRIGIDOS
+- parse_percentual_b3: agora detecta o separador decimal e funciona tanto para
+  formato pt-br ("1.234,56") quanto en-us ("1234.56" ou "1,234.56"). Antes,
+  valores en-us eram multiplicados por 1000.
+- detectar_divergencia: off-by-one corrigido. Com janela=21 agora compara
+  efetivamente 21 pregões (antes comparava 20).
+- calcular_breadth_por_setor: O(T) por chamada -> O(media). Antes calculava
+  toda a série rolling só para ler o último ponto.
+- Filename no docstring/README ajustado.
+
+INCONSISTÊNCIAS RESOLVIDAS
+- IRBR3 e SMFT3 adicionados ao mapa setorial (antes caíam em "Não classificado").
+- B3SA3 movido para "Financeiro" (era setor singleton).
+- tem_pesos agora exige >=50% dos ativos com peso (mín. 5), evitando ativar
+  breadth ponderado com amostra insignificante.
+- Aviso visual quando há ativos sem mapeamento setorial.
+- Regime de mercado pode opcionalmente usar breadth ponderado (toggle na UI).
+- "Repique técnico" agora exige b200<55 (evita classificar como repique quando
+  a estrutura longa está forte) e nova categoria "Consolidação intermediária".
+
+MELHORIAS DE UX E PERFORMANCE
+- @st.cache_data em calcular_breadth, calcular_breadth_por_setor e
+  calcular_historico_breadth_setorial (re-renderizações ficam instantâneas).
+- Persistência via st.session_state: o botão "Atualizar painel" agora deixa
+  o painel renderizado mesmo após mudanças em selectboxes.
+- Aviso quando o período histórico é muito curto para a MM200.
+- Validação do shape do retorno do yfinance (single-ticker / multi-ticker).
+- Caption explicando que os preços são ajustados (auto_adjust=True).
+- Mensagem de divergência usa success/warning de acordo com o resultado.
+- A/D Ratio normalizado (% líquido sobre total de ativos com retorno).
+================================================================================
 """
 
 import base64
@@ -66,9 +104,10 @@ SETOR_POR_CODIGO = {
     "ITSA4": "Financeiro",
     "BPAC11": "Financeiro",
     "SANB11": "Financeiro",
+    "B3SA3": "Financeiro",          # antes era singleton em "Serviços Financeiros"
     "BBSE3": "Seguros",
     "PSSA3": "Seguros",
-    "B3SA3": "Serviços Financeiros",
+    "IRBR3": "Seguros",             # novo: resseguros
 
     # Petróleo, gás e combustíveis
     "PETR3": "Petróleo, Gás e Combustíveis",
@@ -102,6 +141,7 @@ SETOR_POR_CODIGO = {
     "EGIE3": "Energia Elétrica",
     "TAEE11": "Energia Elétrica",
     "ENEV3": "Energia Elétrica",
+    "ENGI11": "Energia Elétrica",
     "SBSP3": "Saneamento",
     "CSMG3": "Saneamento",
 
@@ -116,6 +156,7 @@ SETOR_POR_CODIGO = {
     "AZZA3": "Varejo e Consumo",
     "VIVA3": "Varejo e Consumo",
     "NTCO3": "Varejo e Consumo",
+    "SMFT3": "Varejo e Consumo",    # novo: fitness/bem-estar
     "BRFS3": "Alimentos",
     "JBSS3": "Alimentos",
     "MRFG3": "Alimentos",
@@ -160,6 +201,11 @@ SETOR_POR_CODIGO = {
 }
 
 
+# Aproximação de pregões em cada período do yfinance, usada para avisar
+# quando o período é curto demais para uma análise confortável da MM200.
+PERIODO_DIAS_UTEIS = {"1y": 252, "2y": 504, "5y": 1260, "10y": 2520}
+
+
 def montar_url_b3(indice="IBOV", page_number=1, page_size=200, language="pt-br"):
     payload = {
         "language": language,
@@ -176,18 +222,40 @@ def montar_url_b3(indice="IBOV", page_number=1, page_size=200, language="pt-br")
 
 
 def parse_percentual_b3(valor):
+    """
+    Converte o valor de participação retornado pela B3 em float.
+
+    A B3 pode devolver o valor em formato pt-br ("1.234,56") ou en-us
+    ("1234.56" / "1,234.56"). A função identifica o formato pelo separador
+    decimal mais à direita e converte de forma robusta.
+    """
     if valor is None:
         return None
 
-    texto = str(valor).strip()
+    texto = str(valor).strip().replace(" ", "").replace("\xa0", "")
 
     if not texto:
         return None
 
-    texto = texto.replace(".", "").replace(",", ".")
+    # Caso simples: sem nenhum separador
+    if "," not in texto and "." not in texto:
+        try:
+            return float(texto)
+        except ValueError:
+            return None
+
+    pos_virgula = texto.rfind(",")
+    pos_ponto = texto.rfind(".")
+
+    if pos_ponto > pos_virgula:
+        # en-us: o ponto é decimal, a vírgula (se houver) é separador de milhar
+        normalizado = texto.replace(",", "")
+    else:
+        # pt-br: a vírgula é decimal, o ponto é separador de milhar
+        normalizado = texto.replace(".", "").replace(",", ".")
 
     try:
-        return float(texto)
+        return float(normalizado)
     except ValueError:
         return None
 
@@ -300,6 +368,17 @@ def buscar_carteira_ibov_b3():
 
 @st.cache_data(ttl=30 * 60)
 def baixar_precos_yahoo(tickers, periodo="2y"):
+    """
+    Baixa fechamentos ajustados do Yahoo Finance para a lista de tickers.
+
+    Tolera as duas formas de retorno do yfinance: colunas flat (single-ticker)
+    e MultiIndex (multi-ticker com group_by='ticker').
+    """
+    tickers = list(tickers)
+
+    if not tickers:
+        return pd.DataFrame()
+
     dados = yf.download(
         tickers=tickers,
         period=periodo,
@@ -312,16 +391,32 @@ def baixar_precos_yahoo(tickers, periodo="2y"):
 
     fechamentos = pd.DataFrame()
 
-    if len(tickers) == 1:
-        ticker = tickers[0]
-        if "Close" in dados.columns:
-            fechamentos[ticker] = dados["Close"]
-    else:
-        for ticker in tickers:
-            try:
-                fechamentos[ticker] = dados[ticker]["Close"]
-            except Exception:
-                continue
+    if dados is None or dados.empty:
+        return fechamentos
+
+    # Caso 1: single-ticker -> colunas flat (Open, High, Low, Close, Volume)
+    if not isinstance(dados.columns, pd.MultiIndex):
+        if "Close" in dados.columns and len(tickers) >= 1:
+            fechamentos[tickers[0]] = dados["Close"]
+        return fechamentos.dropna(how="all")
+
+    # Caso 2: multi-ticker -> MultiIndex.
+    # group_by='ticker' deveria gerar (ticker, campo), mas em algumas versões
+    # do yfinance acaba sendo (campo, ticker). Detectamos pelo conteúdo.
+    nivel_tickers = 0
+    nivel_0 = dados.columns.get_level_values(0)
+    if tickers[0] not in nivel_0 and len(tickers) > 1 and tickers[1] not in nivel_0:
+        nivel_tickers = 1
+
+    for ticker in tickers:
+        try:
+            if nivel_tickers == 0:
+                serie = dados[ticker]["Close"]
+            else:
+                serie = dados["Close"][ticker]
+            fechamentos[ticker] = serie
+        except Exception:
+            continue
 
     return fechamentos.dropna(how="all")
 
@@ -336,11 +431,24 @@ def baixar_ibov(periodo="2y"):
         progress=False
     )
 
-    if dados.empty:
+    if dados is None or dados.empty:
         return pd.DataFrame()
 
+    # yfinance pode retornar MultiIndex mesmo para single-ticker em versões recentes
+    if isinstance(dados.columns, pd.MultiIndex):
+        try:
+            close = dados["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+        except Exception:
+            return pd.DataFrame()
+    else:
+        if "Close" not in dados.columns:
+            return pd.DataFrame()
+        close = dados["Close"]
+
     df = pd.DataFrame(index=dados.index)
-    df["IBOV"] = dados["Close"]
+    df["IBOV"] = close
 
     for media in [20, 50, 200]:
         df[f"MM{media}"] = df["IBOV"].rolling(media).mean()
@@ -348,6 +456,29 @@ def baixar_ibov(periodo="2y"):
     return df
 
 
+# ============================================================
+# Cálculos de breadth
+# ============================================================
+
+def _tem_pesos_suficientes(pesos):
+    """
+    Retorna True quando há pesos confiáveis suficientes para calcular
+    breadth ponderado: pelo menos 50% dos ativos com peso, com no mínimo 5
+    valores válidos, e soma > 0.
+    """
+    n_total = len(pesos)
+    n_validos = int(pesos.notna().sum())
+
+    if n_validos < max(5, int(n_total * 0.5)):
+        return False
+
+    if pesos.sum(skipna=True) <= 0:
+        return False
+
+    return True
+
+
+@st.cache_data(ttl=30 * 60, show_spinner=False)
 def calcular_breadth(fechamentos, carteira, medias=(20, 50, 200)):
     resultado = pd.DataFrame(index=fechamentos.index)
     resultado["Total ativos válidos"] = fechamentos.notna().sum(axis=1)
@@ -358,7 +489,7 @@ def calcular_breadth(fechamentos, carteira, medias=(20, 50, 200)):
         .astype("float64")
     )
 
-    tem_pesos = pesos.notna().sum() > 0 and pesos.sum(skipna=True) > 0
+    tem_pesos = _tem_pesos_suficientes(pesos)
 
     for media in medias:
         mm = fechamentos.rolling(media).mean()
@@ -384,15 +515,23 @@ def calcular_breadth(fechamentos, carteira, medias=(20, 50, 200)):
 
 
 def calcular_advance_decline(fechamentos):
+    """
+    Calcula Advances, Declines, Net Advances, A/D Line e A/D Ratio (normalizado).
+
+    A/D Ratio = Net Advances / total de ativos com retorno válido no dia * 100.
+    Útil para comparações ao longo do tempo independentes do número de ativos.
+    """
     retornos = fechamentos.pct_change()
     advances = (retornos > 0).sum(axis=1)
     declines = (retornos < 0).sum(axis=1)
+    total = retornos.notna().sum(axis=1).replace(0, pd.NA)
 
     ad = pd.DataFrame(index=fechamentos.index)
     ad["Advances"] = advances
     ad["Declines"] = declines
     ad["Net Advances"] = advances - declines
     ad["Advance/Decline Line"] = ad["Net Advances"].cumsum()
+    ad["A/D Ratio (%)"] = (ad["Net Advances"] / total * 100).astype("float64")
 
     return ad
 
@@ -440,6 +579,12 @@ def calcular_tabela_ativos(fechamentos, carteira):
 
 
 def detectar_divergencia(ibov, breadth, janela=21):
+    """
+    Compara variação do IBOV e do breadth nos últimos `janela` pregões.
+
+    Para olhar `janela` períodos atrás, usamos iloc[-(janela+1)], pois iloc[-1]
+    é o ponto atual e iloc[-(janela+1)] é exatamente `janela` posições antes.
+    """
     if ibov.empty or breadth.empty:
         return "Sem dados suficientes para avaliar divergência."
 
@@ -455,9 +600,10 @@ def detectar_divergencia(ibov, breadth, janela=21):
     if len(base) < janela + 1:
         return "Sem histórico suficiente para avaliar divergência."
 
-    ibov_var = base["IBOV"].iloc[-1] / base["IBOV"].iloc[-janela] - 1
-    b20_var = base["Breadth_MM20"].iloc[-1] - base["Breadth_MM20"].iloc[-janela]
-    b50_var = base["Breadth_MM50"].iloc[-1] - base["Breadth_MM50"].iloc[-janela]
+    inicio = -janela - 1  # exatamente `janela` pregões antes do iloc[-1]
+    ibov_var = base["IBOV"].iloc[-1] / base["IBOV"].iloc[inicio] - 1
+    b20_var = base["Breadth_MM20"].iloc[-1] - base["Breadth_MM20"].iloc[inicio]
+    b50_var = base["Breadth_MM50"].iloc[-1] - base["Breadth_MM50"].iloc[inicio]
 
     if ibov_var > 0 and b20_var < -10 and b50_var < -5:
         return "Divergência baixista: IBOV subiu, mas a participação interna caiu."
@@ -468,10 +614,25 @@ def detectar_divergencia(ibov, breadth, janela=21):
     return "Sem divergência relevante no momento."
 
 
-def classificar_regime(ultima):
-    b20 = ultima.get("% acima MM20")
-    b50 = ultima.get("% acima MM50")
-    b200 = ultima.get("% acima MM200")
+def classificar_regime(ultima, usar_ponderado=False):
+    """
+    Classifica o regime de mercado com base nas leituras da última data.
+
+    Quando usar_ponderado=True e as colunas ponderadas existem, usa o breadth
+    ponderado pela participação no IBOV. Caso contrário, usa o breadth simples.
+    """
+    if usar_ponderado and "% ponderado acima MM20" in ultima.index:
+        col_b20 = "% ponderado acima MM20"
+        col_b50 = "% ponderado acima MM50"
+        col_b200 = "% ponderado acima MM200"
+    else:
+        col_b20 = "% acima MM20"
+        col_b50 = "% acima MM50"
+        col_b200 = "% acima MM200"
+
+    b20 = ultima.get(col_b20)
+    b50 = ultima.get(col_b50)
+    b200 = ultima.get(col_b200)
 
     if pd.isna(b20) or pd.isna(b50) or pd.isna(b200):
         return "Neutro", "Ainda há dados insuficientes para classificar o regime completo."
@@ -485,7 +646,14 @@ def classificar_regime(ultima):
     if b20 < 40 and b50 >= 50:
         return "Atenção", "Curto prazo enfraquecendo, mas estrutura intermediária ainda resiste."
 
+    # Quando o curto está forte (>=60) mas o intermediário não acompanha,
+    # separamos repique técnico puro de consolidação intermediária com b200 forte.
     if b20 >= 60 and b50 < 45:
+        if b200 >= 55:
+            return (
+                "Consolidação intermediária",
+                "Curto e longo prazos saudáveis, mas a base de médio prazo ainda está fraca."
+            )
         return "Repique técnico", "Curto prazo melhorou, mas a base intermediária ainda é frágil."
 
     return "Neutro", "Mercado sem sinal extremo de amplitude."
@@ -619,21 +787,24 @@ def aplicar_setores(carteira):
     return carteira
 
 
+@st.cache_data(ttl=30 * 60, show_spinner=False)
 def calcular_breadth_por_setor(fechamentos, carteira, medias=(20, 50, 200)):
     """
     Calcula breadth por setor na data mais recente disponível.
 
-    Retorna tabela com:
-    - setor
-    - quantidade de ativos
-    - % acima MM20, MM50 e MM200
-    - % ponderado acima MM20, MM50 e MM200, quando houver pesos da B3
+    Otimização: como só precisamos do valor da MM na última data, calculamos
+    a média móvel apenas com a janela final (`iloc[-media:]`) usando
+    `mean(skipna=False)`, em vez de rodar `rolling(media).mean()` sobre toda
+    a série. Resultado idêntico, custo O(media) em vez de O(T).
     """
     if fechamentos.empty or carteira.empty:
         return pd.DataFrame()
 
     carteira_setores = aplicar_setores(carteira)
     ultima_data = fechamentos.dropna(how="all").index.max()
+
+    if pd.isna(ultima_data):
+        return pd.DataFrame()
 
     linhas = []
 
@@ -658,13 +829,17 @@ def calcular_breadth_por_setor(fechamentos, carteira, medias=(20, 50, 200)):
             .astype("float64")
         )
 
-        tem_pesos = pesos.notna().sum() > 0 and pesos.sum(skipna=True) > 0
+        tem_pesos = _tem_pesos_suficientes(pesos)
+
+        fechamento_ultimo = precos_setor.loc[ultima_data]
 
         for media in medias:
-            mm = precos_setor.rolling(media).mean()
-
-            fechamento_ultimo = precos_setor.loc[ultima_data]
-            mm_ultima = mm.loc[ultima_data]
+            # mean(skipna=False) reproduz a semântica de rolling(media).mean()
+            # com min_periods=media (qualquer NaN na janela vira NaN no resultado).
+            if len(precos_setor) < media:
+                mm_ultima = pd.Series(pd.NA, index=precos_setor.columns, dtype="float64")
+            else:
+                mm_ultima = precos_setor.iloc[-media:].mean(skipna=False)
 
             base_valida = fechamento_ultimo.notna() & mm_ultima.notna()
             acima = (fechamento_ultimo > mm_ultima) & base_valida
@@ -697,6 +872,7 @@ def calcular_breadth_por_setor(fechamentos, carteira, medias=(20, 50, 200)):
     return df.sort_values("% acima MM20", ascending=False)
 
 
+@st.cache_data(ttl=30 * 60, show_spinner=False)
 def calcular_historico_breadth_setorial(fechamentos, carteira, media=20):
     """
     Calcula o histórico do breadth por setor para uma média específica.
@@ -732,9 +908,7 @@ def calcular_historico_breadth_setorial(fechamentos, carteira, media=20):
 
 
 def grafico_setorial_linhas(df_setorial, titulo_eixo_y="% acima da média"):
-    """
-    Gráfico de linhas para comparação dos setores.
-    """
+    """Gráfico de linhas para comparação dos setores."""
     if df_setorial.empty:
         st.info("Sem dados setoriais suficientes para o gráfico.")
         return
@@ -776,9 +950,7 @@ def grafico_setorial_linhas(df_setorial, titulo_eixo_y="% acima da média"):
 
 
 def grafico_barras_setor(df_setor, coluna_valor, titulo_eixo_x="% acima da média"):
-    """
-    Gráfico de barras horizontais para ranking setorial atual.
-    """
+    """Gráfico de barras horizontais para ranking setorial atual."""
     if df_setor.empty or coluna_valor not in df_setor.columns:
         st.info("Sem dados setoriais suficientes para o ranking.")
         return
@@ -818,9 +990,7 @@ def formatar_qtd_acima(ultima, media):
 
 
 def exibir_quadro_regras_regime():
-    """
-    Exibe o quadro explicativo dos critérios usados para classificar o regime.
-    """
+    """Exibe o quadro explicativo dos critérios usados para classificar o regime."""
     st.markdown("### Critérios usados para definir o regime")
 
     st.info(
@@ -836,18 +1006,21 @@ def exibir_quadro_regras_regime():
         - **Atenção:** MM20 < 40% e MM50 ≥ 50%.  
           Indica perda de força no curto prazo, mas com estrutura intermediária ainda resistente.
 
-        - **Repique técnico:** MM20 ≥ 60% e MM50 < 45%.  
-          Indica melhora de curto prazo, mas ainda sem confirmação intermediária.
+        - **Repique técnico:** MM20 ≥ 60%, MM50 < 45% e MM200 < 55%.  
+          Indica melhora de curto prazo sem confirmação intermediária nem suporte de longo prazo.
+
+        - **Consolidação intermediária:** MM20 ≥ 60%, MM50 < 45% e MM200 ≥ 55%.  
+          Curto e longo prazos saudáveis, mas a base de médio prazo ainda está fraca.
 
         - **Neutro:** usado quando nenhuma das condições acima é atendida ou quando ainda não há dados suficientes.
+
+        > Quando há pesos de participação disponíveis na carteira, o regime pode opcionalmente ser calculado com o breadth ponderado (toggle na barra lateral).
         """
     )
 
 
 def exibir_explicacao_advance_decline():
-    """
-    Exibe explicação operacional sobre o gráfico Advance/Decline Line.
-    """
+    """Exibe explicação operacional sobre o gráfico Advance/Decline Line."""
     st.markdown("### Como interpretar o gráfico Advance/Decline Line")
 
     st.info(
@@ -859,7 +1032,8 @@ def exibir_explicacao_advance_decline():
         - **Advance:** ativo que fechou em alta no dia;
         - **Decline:** ativo que fechou em queda no dia;
         - **Net Advances:** quantidade de ativos em alta menos quantidade de ativos em queda;
-        - **Advance/Decline Line:** soma acumulada diária do Net Advances.
+        - **Advance/Decline Line:** soma acumulada diária do Net Advances;
+        - **A/D Ratio (%):** Net Advances normalizado pelo total de ativos com retorno no dia. Útil porque não depende do tamanho histórico da base.
 
         **Exemplo:**  
         Se em determinado dia 55 ativos subiram e 28 caíram, o saldo do dia será:
@@ -889,6 +1063,29 @@ def exibir_explicacao_advance_decline():
         """
     )
 
+
+def mostrar_aviso_periodo(periodo):
+    """
+    Avisa quando o período histórico escolhido é curto demais para uma análise
+    confortável da MM200.
+    """
+    dias = PERIODO_DIAS_UTEIS.get(periodo, 504)
+    if dias < 1.5 * 200:
+        st.warning(
+            f"O período **{periodo}** tem cerca de {dias} pregões e deixa pouca folga "
+            f"para a MM200 (que precisa de 200 pregões para começar a ser calculada). "
+            f"Para análises com MM200, recomendo **2y** ou mais."
+        )
+
+
+def mostrar_mensagem_divergencia(texto):
+    """Exibe a mensagem de divergência com estilo apropriado."""
+    if "Divergência" in texto:
+        st.warning(texto)
+    else:
+        st.success(texto)
+
+
 def main():
     st.set_page_config(
         page_title="Market Breadth ELITE Setorial - Ibovespa",
@@ -916,6 +1113,17 @@ def main():
             index=0
         )
 
+        usar_breadth_ponderado_regime = st.checkbox(
+            "Usar breadth ponderado para o regime (quando disponível)",
+            value=False,
+            help=(
+                "Quando ligado e a B3 fornecer pesos, o regime considera a "
+                "participação ponderada dos ativos no IBOV, em vez de contagem simples."
+            )
+        )
+
+    mostrar_aviso_periodo(periodo)
+
     if fonte_carteira == "Buscar automaticamente na B3":
         try:
             carteira = buscar_carteira_ibov_b3()
@@ -941,219 +1149,267 @@ def main():
 
     carteira = aplicar_setores(carteira)
 
+    # Aviso para tickers sem mapeamento setorial
+    nao_classificados = (
+        carteira.loc[carteira["setor"] == "Não classificado", "codigo"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
+    if nao_classificados:
+        st.caption(
+            "⚠️ Sem classificação setorial: "
+            + ", ".join(sorted(nao_classificados))
+            + ". Edite o dicionário `SETOR_POR_CODIGO` para incluí-los."
+        )
+
     with st.expander("Carteira usada no cálculo", expanded=False):
-        st.dataframe(carteira, width="stretch")
+        st.dataframe(carteira, use_container_width=True)
 
     tickers = carteira["ticker_yahoo"].dropna().drop_duplicates().tolist()
 
+    # Persistência via session_state: o painel não some quando o usuário
+    # mexe em selectboxes depois de clicar em "Atualizar".
+    if "executar_calculo" not in st.session_state:
+        st.session_state.executar_calculo = False
+
     if st.button("Atualizar painel", type="primary"):
-        with st.spinner("Baixando dados e calculando indicadores..."):
-            fechamentos = baixar_precos_yahoo(tickers, periodo)
-            breadth = calcular_breadth(fechamentos, carteira)
-            breadth_setor = calcular_breadth_por_setor(fechamentos, carteira)
-            ad_line = calcular_advance_decline(fechamentos)
-            tabela = calcular_tabela_ativos(fechamentos, carteira)
-            ibov = baixar_ibov(periodo)
+        st.session_state.executar_calculo = True
 
-        if fechamentos.empty or breadth.empty:
-            st.error("Não foi possível calcular. Verifique conexão, tickers ou bloqueio do Yahoo.")
-            return
+    if not st.session_state.executar_calculo:
+        st.info("Clique em **Atualizar painel** para baixar os dados e calcular os indicadores.")
+        return
 
-        breadth_valido = breadth.dropna(subset=["% acima MM20"], how="all")
+    with st.spinner("Baixando dados e calculando indicadores..."):
+        # tuple(tickers) para tornar o argumento hashable de forma estável
+        fechamentos = baixar_precos_yahoo(tuple(tickers), periodo)
+        breadth = calcular_breadth(fechamentos, carteira)
+        breadth_setor = calcular_breadth_por_setor(fechamentos, carteira)
+        ad_line = calcular_advance_decline(fechamentos)
+        tabela = calcular_tabela_ativos(fechamentos, carteira)
+        ibov = baixar_ibov(periodo)
 
-        if breadth_valido.empty:
-            st.error("Ainda não há dados suficientes para calcular o breadth.")
-            return
+    if fechamentos.empty or breadth.empty:
+        st.error("Não foi possível calcular. Verifique conexão, tickers ou bloqueio do Yahoo.")
+        return
 
-        ultima = breadth_valido.iloc[-1]
-        data_ultima = breadth_valido.index[-1].strftime("%d/%m/%Y")
+    breadth_valido = breadth.dropna(subset=["% acima MM20"], how="all")
 
-        regime, leitura_regime = classificar_regime(ultima)
-        divergencia = detectar_divergencia(ibov, breadth)
+    if breadth_valido.empty:
+        st.error("Ainda não há dados suficientes para calcular o breadth.")
+        return
 
-        st.subheader(f"Leitura mais recente - {data_ultima}")
+    ultima = breadth_valido.iloc[-1]
+    data_ultima = breadth_valido.index[-1].strftime("%d/%m/%Y")
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Regime", regime)
-        col2.metric("Acima da MM20", formatar_pct(ultima["% acima MM20"]))
-        col3.metric("Acima da MM50", formatar_pct(ultima["% acima MM50"]))
-        col4.metric("Acima da MM200", formatar_pct(ultima["% acima MM200"]))
+    tem_ponderado = "% ponderado acima MM20" in ultima.index
+    usar_ponderado_efetivo = usar_breadth_ponderado_regime and tem_ponderado
 
-        colq1, colq2, colq3, colq4 = st.columns(4)
-        colq1.metric("Base total válida", f"{int(ultima['Total ativos válidos'])} ativos")
-        colq2.metric("Qtd acima da MM20", formatar_qtd_acima(ultima, 20))
-        colq3.metric("Qtd acima da MM50", formatar_qtd_acima(ultima, 50))
-        colq4.metric("Qtd acima da MM200", formatar_qtd_acima(ultima, 200))
+    regime, leitura_regime = classificar_regime(ultima, usar_ponderado=usar_ponderado_efetivo)
+    divergencia = detectar_divergencia(ibov, breadth)
 
-        st.info(leitura_regime)
-        st.warning(divergencia)
+    st.subheader(f"Leitura mais recente - {data_ultima}")
 
-        with st.expander("Ver regras e critérios usados para definir o regime", expanded=True):
-            exibir_quadro_regras_regime()
-
-        st.divider()
-
+    if usar_breadth_ponderado_regime and not tem_ponderado:
         st.caption(
-            "Dica de navegação nos gráficos: use o scroll do mouse para aproximar/afastar no eixo temporal; "
-            "arraste para navegar pelo período; dê duplo clique para restaurar a visualização completa."
+            "Regime ponderado solicitado, mas a carteira não tem pesos suficientes. "
+            "Usando contagem simples."
         )
+    elif usar_ponderado_efetivo:
+        st.caption("Regime calculado usando breadth ponderado pelo peso no IBOV.")
 
-        st.subheader("Breadth percentual simples")
-        grafico_medias_coloridas(
-            breadth,
-            ["% acima MM20", "% acima MM50", "% acima MM200"],
-            titulo_eixo_y="% de ativos acima da média"
-        )
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Regime", regime)
+    col2.metric("Acima da MM20", formatar_pct(ultima["% acima MM20"]))
+    col3.metric("Acima da MM50", formatar_pct(ultima["% acima MM50"]))
+    col4.metric("Acima da MM200", formatar_pct(ultima["% acima MM200"]))
 
-        colunas_ponderadas = [
-            c for c in [
-                "% ponderado acima MM20",
-                "% ponderado acima MM50",
-                "% ponderado acima MM200"
-            ]
-            if c in breadth.columns
+    colq1, colq2, colq3, colq4 = st.columns(4)
+    colq1.metric("Base total válida", f"{int(ultima['Total ativos válidos'])} ativos")
+    colq2.metric("Qtd acima da MM20", formatar_qtd_acima(ultima, 20))
+    colq3.metric("Qtd acima da MM50", formatar_qtd_acima(ultima, 50))
+    colq4.metric("Qtd acima da MM200", formatar_qtd_acima(ultima, 200))
+
+    st.info(leitura_regime)
+    mostrar_mensagem_divergencia(divergencia)
+
+    with st.expander("Ver regras e critérios usados para definir o regime", expanded=True):
+        exibir_quadro_regras_regime()
+
+    st.divider()
+
+    st.caption(
+        "Dica de navegação nos gráficos: use o scroll do mouse para aproximar/afastar no eixo temporal; "
+        "arraste para navegar pelo período; dê duplo clique para restaurar a visualização completa."
+    )
+
+    st.subheader("Breadth percentual simples")
+    grafico_medias_coloridas(
+        breadth,
+        ["% acima MM20", "% acima MM50", "% acima MM200"],
+        titulo_eixo_y="% de ativos acima da média"
+    )
+
+    colunas_ponderadas = [
+        c for c in [
+            "% ponderado acima MM20",
+            "% ponderado acima MM50",
+            "% ponderado acima MM200"
         ]
+        if c in breadth.columns
+    ]
 
-        if colunas_ponderadas:
-            st.subheader("Breadth ponderado pelo peso no IBOV")
-            grafico_medias_coloridas(
-                breadth,
-                colunas_ponderadas,
-                titulo_eixo_y="% ponderado acima da média"
-            )
-
-        st.subheader("Quantidade de ativos acima das médias")
+    if colunas_ponderadas:
+        st.subheader("Breadth ponderado pelo peso no IBOV")
         grafico_medias_coloridas(
             breadth,
-            ["Qtd acima MM20", "Qtd acima MM50", "Qtd acima MM200"],
-            titulo_eixo_y="Quantidade de ativos"
+            colunas_ponderadas,
+            titulo_eixo_y="% ponderado acima da média"
         )
 
-        st.divider()
+    st.subheader("Quantidade de ativos acima das médias")
+    grafico_medias_coloridas(
+        breadth,
+        ["Qtd acima MM20", "Qtd acima MM50", "Qtd acima MM200"],
+        titulo_eixo_y="Quantidade de ativos"
+    )
 
-        st.subheader("Breadth por setor do IBOV")
-        st.caption("Mostra quais setores possuem maior participação de ativos acima das médias móveis.")
+    st.divider()
 
-        if not breadth_setor.empty:
-            col_setor1, col_setor2 = st.columns(2)
+    st.subheader("Breadth por setor do IBOV")
+    st.caption("Mostra quais setores possuem maior participação de ativos acima das médias móveis.")
 
-            with col_setor1:
-                st.markdown("**Ranking setorial pela MM20**")
-                grafico_barras_setor(
-                    breadth_setor,
-                    "% acima MM20",
-                    titulo_eixo_x="% de ativos acima da MM20"
-                )
+    if not breadth_setor.empty:
+        col_setor1, col_setor2 = st.columns(2)
 
-            with col_setor2:
-                st.markdown("**Ranking setorial pela MM50**")
-                grafico_barras_setor(
-                    breadth_setor,
-                    "% acima MM50",
-                    titulo_eixo_x="% de ativos acima da MM50"
-                )
-
-            st.markdown("**Tabela setorial completa**")
-            st.dataframe(
-                breadth_setor.style.format({
-                    "% acima MM20": "{:.1f}%",
-                    "% acima MM50": "{:.1f}%",
-                    "% acima MM200": "{:.1f}%",
-                    "% ponderado acima MM20": "{:.1f}%",
-                    "% ponderado acima MM50": "{:.1f}%",
-                    "% ponderado acima MM200": "{:.1f}%",
-                }),
-                width="stretch"
+        with col_setor1:
+            st.markdown("**Ranking setorial pela MM20**")
+            grafico_barras_setor(
+                breadth_setor,
+                "% acima MM20",
+                titulo_eixo_x="% de ativos acima da MM20"
             )
 
-            media_setorial = st.selectbox(
-                "Escolha a média para ver o histórico setorial",
-                [20, 50, 200],
-                index=0
+        with col_setor2:
+            st.markdown("**Ranking setorial pela MM50**")
+            grafico_barras_setor(
+                breadth_setor,
+                "% acima MM50",
+                titulo_eixo_x="% de ativos acima da MM50"
             )
 
-            historico_setorial = calcular_historico_breadth_setorial(
-                fechamentos,
-                carteira,
-                media=media_setorial
-            )
-
-            st.markdown(f"**Histórico setorial: % de ativos acima da MM{media_setorial}**")
-            grafico_setorial_linhas(
-                historico_setorial,
-                titulo_eixo_y=f"% acima da MM{media_setorial}"
-            )
-
-            st.download_button(
-                "Baixar breadth por setor em CSV",
-                data=breadth_setor.to_csv(sep=";", decimal=",", index=False).encode("utf-8-sig"),
-                file_name="breadth_setorial_ibov.csv",
-                mime="text/csv"
-            )
-        else:
-            st.info("Não foi possível calcular o breadth setorial.")
-
-        st.divider()
-
-        st.subheader("Advance/Decline Line aproximada")
-        grafico_linha_simples(
-            ad_line,
-            ["Advance/Decline Line"],
-            titulo_eixo_y="Linha A/D acumulada"
-        )
-
-        with st.expander("Entenda o cálculo e a interpretação da Advance/Decline Line", expanded=True):
-            exibir_explicacao_advance_decline()
-
-        if not ibov.empty:
-            st.subheader("IBOV e médias móveis")
-            grafico_medias_coloridas(
-                ibov,
-                ["IBOV", "MM20", "MM50", "MM200"],
-                titulo_eixo_y="Pontos do IBOV"
-            )
-
-        st.divider()
-
-        st.subheader("Ranking por ativo")
-        st.caption("Ordenado pela distância percentual em relação à MM20.")
-
+        st.markdown("**Tabela setorial completa**")
         st.dataframe(
-            tabela.style.format({
-                "participacao_pct": "{:.3f}",
-                "ultimo_fechamento": "{:.2f}",
-                "retorno_5d_pct": "{:.2f}%",
-                "retorno_21d_pct": "{:.2f}%",
-                "MM20": "{:.2f}",
-                "MM50": "{:.2f}",
-                "MM200": "{:.2f}",
-                "dist_MM20_pct": "{:.2f}%",
-                "dist_MM50_pct": "{:.2f}%",
-                "dist_MM200_pct": "{:.2f}%",
+            breadth_setor.style.format({
+                "% acima MM20": "{:.1f}%",
+                "% acima MM50": "{:.1f}%",
+                "% acima MM200": "{:.1f}%",
+                "% ponderado acima MM20": "{:.1f}%",
+                "% ponderado acima MM50": "{:.1f}%",
+                "% ponderado acima MM200": "{:.1f}%",
             }),
-            width="stretch"
+            use_container_width=True
+        )
+
+        media_setorial = st.selectbox(
+            "Escolha a média para ver o histórico setorial",
+            [20, 50, 200],
+            index=0
+        )
+
+        historico_setorial = calcular_historico_breadth_setorial(
+            fechamentos,
+            carteira,
+            media=media_setorial
+        )
+
+        st.markdown(f"**Histórico setorial: % de ativos acima da MM{media_setorial}**")
+        grafico_setorial_linhas(
+            historico_setorial,
+            titulo_eixo_y=f"% acima da MM{media_setorial}"
         )
 
         st.download_button(
-            "Baixar breadth em CSV",
-            data=breadth.to_csv(sep=";", decimal=",", index=True).encode("utf-8-sig"),
-            file_name="market_breadth_ibov_elite.csv",
+            "Baixar breadth por setor em CSV",
+            data=breadth_setor.to_csv(sep=";", decimal=",", index=False).encode("utf-8-sig"),
+            file_name="breadth_setorial_ibov.csv",
             mime="text/csv"
+        )
+    else:
+        st.info("Não foi possível calcular o breadth setorial.")
+
+    st.divider()
+
+    st.subheader("Advance/Decline Line aproximada")
+    grafico_linha_simples(
+        ad_line,
+        ["Advance/Decline Line"],
+        titulo_eixo_y="Linha A/D acumulada"
+    )
+
+    st.markdown("**A/D Ratio normalizado (% líquido sobre o total de ativos com retorno)**")
+    grafico_linha_simples(
+        ad_line,
+        ["A/D Ratio (%)"],
+        titulo_eixo_y="A/D Ratio (%)"
+    )
+
+    with st.expander("Entenda o cálculo e a interpretação da Advance/Decline Line", expanded=True):
+        exibir_explicacao_advance_decline()
+
+    if not ibov.empty:
+        st.subheader("IBOV e médias móveis")
+        grafico_medias_coloridas(
+            ibov,
+            ["IBOV", "MM20", "MM50", "MM200"],
+            titulo_eixo_y="Pontos do IBOV"
         )
 
-        st.download_button(
-            "Baixar ranking por ativo em CSV",
-            data=tabela.to_csv(sep=";", decimal=",", index=False).encode("utf-8-sig"),
-            file_name="ranking_ativos_ibov_elite.csv",
-            mime="text/csv"
-        )
+    st.divider()
 
-        st.download_button(
-            "Baixar Advance/Decline em CSV",
-            data=ad_line.to_csv(sep=";", decimal=",", index=True).encode("utf-8-sig"),
-            file_name="advance_decline_ibov.csv",
-            mime="text/csv"
-        )
+    st.subheader("Ranking por ativo")
+    st.caption(
+        "Ordenado pela distância percentual em relação à MM20. "
+        "**Os preços são ajustados por proventos e desdobramentos (auto_adjust=True), "
+        "podendo divergir das cotações exibidas no home broker.**"
+    )
+
+    st.dataframe(
+        tabela.style.format({
+            "participacao_pct": "{:.3f}",
+            "ultimo_fechamento": "{:.2f}",
+            "retorno_5d_pct": "{:.2f}%",
+            "retorno_21d_pct": "{:.2f}%",
+            "MM20": "{:.2f}",
+            "MM50": "{:.2f}",
+            "MM200": "{:.2f}",
+            "dist_MM20_pct": "{:.2f}%",
+            "dist_MM50_pct": "{:.2f}%",
+            "dist_MM200_pct": "{:.2f}%",
+        }),
+        use_container_width=True
+    )
+
+    st.download_button(
+        "Baixar breadth em CSV",
+        data=breadth.to_csv(sep=";", decimal=",", index=True).encode("utf-8-sig"),
+        file_name="market_breadth_ibov_elite.csv",
+        mime="text/csv"
+    )
+
+    st.download_button(
+        "Baixar ranking por ativo em CSV",
+        data=tabela.to_csv(sep=";", decimal=",", index=False).encode("utf-8-sig"),
+        file_name="ranking_ativos_ibov_elite.csv",
+        mime="text/csv"
+    )
+
+    st.download_button(
+        "Baixar Advance/Decline em CSV",
+        data=ad_line.to_csv(sep=";", decimal=",", index=True).encode("utf-8-sig"),
+        file_name="advance_decline_ibov.csv",
+        mime="text/csv"
+    )
 
 
 if __name__ == "__main__":

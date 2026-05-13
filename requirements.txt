@@ -1,7 +1,10 @@
-yfinance
-pandas
-streamlit
-requests
-matplotlib
-openpyxl
-altair
+# Dependências mínimas. Versões pinadas para compatibilidade com:
+# - st.cache_data (Streamlit >= 1.18)
+# - auto_adjust=True por padrão (yfinance >= 0.2.40)
+# - MultiIndex de retorno do yf.download
+# Removidos: matplotlib e openpyxl (não eram usados).
+yfinance>=0.2.40
+pandas>=2.0
+streamlit>=1.30
+requests>=2.31
+altair>=5.0
